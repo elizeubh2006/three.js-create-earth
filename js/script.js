@@ -1376,6 +1376,124 @@ var SceneShadow = (function (Scene) {
     return new _SceneShadow();
 })(Scene);
 
+/* === FIRST PERSON CAMERA (nova) ============================================ */
+var FirstPerson = (function (Earth, Camera, Scene, Renderer, Utils) {
+    var _FP = function () {
+        var self = this;
+
+        // Públicos
+        this.active = false;
+        this.camera = null;
+
+        // Privados
+        var upObj, yawObj, pitchObj;
+        var pitch = 0;
+        var sensitivity = 0.002;
+        var isLocked = false;
+
+        this.init = function () {
+            // Usa os mesmos parâmetros básicos da câmera padrão
+            var base = Camera.perspectiveCamera;
+            this.camera = new THREE.PerspectiveCamera(base.fov, Utils.windowRatio(), base.near, base.far);
+
+            // Posiciona no EQUADOR e cola na superfície da Terra
+            var earthRadius = Earth.geometry.parameters.radius;
+            var normal = new THREE.Vector3(0, 0, 1); // Equador (no eixo +Z)
+
+            // Rig no centro: orienta +Y para a normal escolhida
+            upObj = new THREE.Object3D();
+            upObj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal.clone().normalize());
+
+            // Yaw = giro ao redor da vertical local (normal)
+            yawObj = new THREE.Object3D();
+            upObj.add(yawObj);
+
+            // Pitch = giro no eixo X local (tangente)
+            pitchObj = new THREE.Object3D();
+            yawObj.add(pitchObj);
+
+            // Câmera exatamente "na superfície"
+            this.camera.position.set(0, earthRadius + 0.001, 0);
+            this.camera.up.copy(normal);
+            pitchObj.add(this.camera);
+
+            // Prende todo o rig na Terra para acompanhar a rotação
+            Earth.earthMesh.add(upObj);
+
+            // Pointer Lock (para olhar ao redor com o mouse)
+            var canvas = Renderer.webGLRenderer.domElement;
+
+            document.addEventListener('pointerlockchange', function () {
+                isLocked = (document.pointerLockElement === canvas);
+            }, false);
+
+            document.addEventListener('mousemove', function (e) {
+                if (!self.active || !isLocked) return;
+
+                var movementX = e.movementX || e.mozMovementX || e.webkitMovementX || 0;
+                var movementY = e.movementY || e.mozMovementY || e.webkitMovementY || 0;
+
+                // yaw
+                yawObj.rotation.y -= movementX * sensitivity;
+
+                // pitch (clamp)
+                pitch -= movementY * sensitivity;
+                var limit = Math.PI / 2 - 0.01;
+                pitch = Math.max(-limit, Math.min(limit, pitch));
+                pitchObj.rotation.x = pitch;
+            }, false);
+        };
+
+        this.toggle = function () {
+            if (this.active) { this.disable(); } else { this.enable(); }
+        };
+
+        this.enable = function () {
+            this.active = true;
+            if (Scene.orbitControls) Scene.orbitControls.enabled = false;
+
+            // Tenta travar o mouse (precisa de gesto do usuário)
+            var el = Renderer.webGLRenderer.domElement;
+            if (el.requestPointerLock) el.requestPointerLock();
+        };
+
+        this.disable = function () {
+            this.active = false;
+            if (Scene.orbitControls) Scene.orbitControls.enabled = true;
+
+            if (document.exitPointerLock) document.exitPointerLock();
+        };
+
+        this.updateAspect = function () {
+            if (!this.camera) return;
+            this.camera.aspect = Utils.windowRatio();
+            this.camera.updateProjectionMatrix();
+        };
+
+        this.bindToggleButton = function (buttonId) {
+            var btn = document.getElementById(buttonId);
+            if (!btn) return;
+
+            var refreshLabel = function () {
+                btn.textContent = self.active ? 'Câmera: 1ª pessoa (ESC solta o mouse)'
+                                              : 'Câmera: 3ª pessoa';
+            };
+
+            btn.addEventListener('click', function () {
+                self.toggle();
+                refreshLabel();
+            }, false);
+
+            document.addEventListener('pointerlockchange', refreshLabel, false);
+            refreshLabel();
+        };
+    };
+
+    return new _FP();
+})(Earth, Camera, Scene, Renderer, Utils);
+/* === fim FIRST PERSON CAMERA ============================================== */
+
+
 /**
  * View
  */
@@ -1395,6 +1513,8 @@ var View = (function () {
             this.updateAll();
             this.addGui();
             this.help();
+            FirstPerson.init();
+            FirstPerson.bindToggleButton('camera-toggle');
 
             animate();
 
@@ -1445,8 +1565,10 @@ var View = (function () {
 
         this.updateAll = function () {
             Camera.updateAspect();
+            FirstPerson.updateAspect();
             Renderer.updateSize();
         };
+
 
         this.help = function () {
             var helpElementStyle = document.getElementsByClassName(params.helpClassname)[0].style;
@@ -1466,9 +1588,17 @@ var View = (function () {
             Cloud.animate(delta);
             Moon.animate(delta);
 
-            Scene.orbitControls.update();
-            Renderer.webGLRenderer.render(Scene.scene, Camera.perspectiveCamera);
+            if (FirstPerson.active) {
+                // nada a atualizar aqui; o mouse (pointer lock) já move yaw/pitch
+            } else {
+                Scene.orbitControls.update();
+            }
+
+            var cam = FirstPerson.active ? FirstPerson.camera : Camera.perspectiveCamera;
+            Renderer.webGLRenderer.render(Scene.scene, cam);
         };
+
+
 
         this.init();
     };
